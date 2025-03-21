@@ -1,10 +1,10 @@
 import os
 import logging
+import requests
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-import requests
 
 # 初始化 Flask 應用
 app = Flask(__name__)
@@ -13,7 +13,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 從環境變量獲取配置
+# 從環境變量獲取憑證
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 XAI_API_KEY = os.getenv('XAI_API_KEY')
@@ -30,7 +30,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # x.ai API 配置
 XAI_API_URL = 'https://api.x.ai/v1/chat/completions'
 
-# 系統提示詞，定義機器人角色與行為
+# 定義 PMP 助教的系統提示詞
 SYSTEM_PROMPT = """
 你是一位 PMP 認證專業教師，專精於專案管理領域。你的任務是根據 PMP 考試的答題邏輯和 PMBOK 指南（最新版）來解釋專案管理概念。請遵循以下準則：
 
@@ -41,7 +41,7 @@ SYSTEM_PROMPT = """
    - 提醒是否需要與利害關係人協商或遵循變更管理流程。
 3. **PMBOK 參考**：提供具體的 PMBOK 章節參考，例如：「根據 PMBOK 第六版第 4 章，專案整合管理……」。
 4. **詳細回應**：請提供非常詳細的回應，確保涵蓋所有相關細節。
-5. **分段發送**：如果回應超過 700 字，請將內容分段發送。
+5. **分段發送**：如果回應超過 700 字，請將內容分段發送，每段保持句子完整性。
 
 請始終保持專業、客觀的語氣，並確保你的回應符合 PMI 的最佳實踐。
 """
@@ -52,7 +52,6 @@ def split_message(message, max_length=700):
     """
     parts = []
     while len(message) > max_length:
-        # 在 max_length 前尋找最近的空白字符
         split_index = message.rfind(' ', 0, max_length)
         if split_index == -1:
             split_index = max_length  # 若無空白字符，直接按 max_length 分割
@@ -61,8 +60,8 @@ def split_message(message, max_length=700):
     parts.append(message)
     return parts
 
-@app.route("/callback", methods=['POST'])
-def callback():
+@app.route("/webhook", methods=['POST'])
+def webhook():
     """處理 LINE Webhook 請求"""
     signature = request.headers.get('X-Line-Signature')
     body = request.get_data(as_text=True)
@@ -74,7 +73,7 @@ def callback():
         logger.error("Invalid signature")
         abort(400)  # 返回 400 表示簽名無效
     except Exception as e:
-        logger.error(f"Error in callback: {e}")
+        logger.error(f"Error in webhook: {e}")
         return 'Internal Server Error', 500  # 返回 500 表示內部錯誤
     return 'OK', 200  # 明確返回 200 狀態碼表示成功
 
@@ -82,7 +81,7 @@ def callback():
 def handle_message(event):
     """處理用戶發送的文字訊息"""
     try:
-        user_message = event.message.text
+        user_message = event.message.text.strip()
         logger.info(f"Received message: {user_message}")
 
         # 準備 x.ai API 請求
@@ -91,7 +90,7 @@ def handle_message(event):
             'Content-Type': 'application/json'
         }
         data = {
-            'model': 'grok',  # 請確認這是正確的模型名稱
+            'model': 'grok',  # 根據 x.ai 文件確認模型名稱
             'messages': [
                 {'role': 'system', 'content': SYSTEM_PROMPT},
                 {'role': 'user', 'content': user_message + "\n請提供一個非常詳細的回應。"}
