@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import requests
 import time
@@ -42,6 +43,12 @@ SYSTEM_PROMPT = (
     "若用戶要求「請提供一個非常詳細的回應」，請務必完整說明並分段回覆（每段不超過 700 字），"
     "避免訊息因長度而被截斷。"
 )
+
+def replace_bold_with_emoji(text: str) -> str:
+    """
+    將所有 Markdown 粗體標記 **text** 轉換為 emoji 包圍格式，例如：🎯text🎯。
+    """
+    return re.sub(r'\*\*(.*?)\*\*', r'🎯\1🎯', text)
 
 def send_loading_animation(user_id: str, loading_seconds: int = 10):
     """
@@ -96,18 +103,43 @@ def call_xai_api(user_message: str) -> str:
         logging.error("呼叫 x.ai API 時發生例外：%s", e)
         return "對不起，生成回應時發生例外。"
 
-def split_message(text: str, max_length: int = 700) -> list:
+def smart_split_message(text: str, max_length: int = 700) -> list:
     """
-    將長訊息依每 max_length 字元分段，回傳訊息區塊串列。
-    若分段中出現不成對的 triple backticks (```)，則自動補齊 markdown 格式，避免斷裂問題。
+    以智慧方式將長訊息分段，盡量在換行符號或空白處切割，
+    避免破壞 Markdown 語法或文字內容。
     """
-    segments = [text[i:i+max_length] for i in range(0, len(text), max_length)]
-    for i in range(len(segments) - 1):
-        # 若本段中的 triple backticks 不成對，則補上 closing 標記
-        if segments[i].count("```") % 2 != 0:
-            segments[i] += "\n```"
-            segments[i+1] = "```\n" + segments[i+1]
-    return segments
+    parts = []
+    while len(text) > max_length:
+        split_pos = text.rfind("\n", 0, max_length)
+        if split_pos == -1:
+            split_pos = text.rfind(" ", 0, max_length)
+            if split_pos == -1:
+                split_pos = max_length
+        parts.append(text[:split_pos].rstrip())
+        text = text[split_pos:].lstrip()
+    if text:
+        parts.append(text)
+    return parts
+
+def ensure_complete_markdown(parts: list) -> list:
+    """
+    檢查斷開後的每個段落是否有未平衡的 Markdown 語法（例如程式碼區塊未關閉），
+    若有則將該段與下一段合併或補上結尾，確保每個段落的 Markdown 格式完整。
+    """
+    complete_parts = []
+    buffer = ""
+    for part in parts:
+        if buffer:
+            buffer += "\n" + part
+        else:
+            buffer = part
+        if buffer.count("```") % 2 == 0:
+            complete_parts.append(buffer)
+            buffer = ""
+    if buffer:
+        buffer += "\n```"
+        complete_parts.append(buffer)
+    return complete_parts
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -127,25 +159,32 @@ def handle_message(event):
     user_message = event.message.text
     logging.info("收到用戶訊息：%s", user_message)
     
-    # 取得用戶 ID 與 reply token
+    # 取得用戶 ID 與 reply token（注意不同 SDK 版本屬性名稱可能不同）
     user_id = event.source.user_id if hasattr(event.source, "user_id") else event.source.userId
     reply_token = event.reply_token
     loading_duration = 10  # 設定等待動畫持續 10 秒
     
-    # 發送等待動畫
+    # 發送等待動畫 (僅限一對一聊天中有效)
     send_loading_animation(user_id, loading_seconds=loading_duration)
     
     start_time = time.time()
     response_text = call_xai_api(user_message)
     elapsed_time = time.time() - start_time
     
-    # 補足剩餘等待時間，確保動畫完整播放後再回覆
+    # 若 API 回應在等待動畫時間內完成，補足剩餘等待時間
     if elapsed_time < loading_duration:
         time.sleep(loading_duration - elapsed_time)
     
-    messages = [TextSendMessage(text=segment) for segment in split_message(response_text, max_length=700)]
+    # 使用 smart_split_message 進行斷行切割
+    parts = smart_split_message(response_text, max_length=700)
+    # 確保 Markdown 格式完整
+    parts = ensure_complete_markdown(parts)
+    # 將 Markdown 粗體符號 ** 替換成 emoji
+    parts = [replace_bold_with_emoji(part) for part in parts]
     
-    # 若回應超時（超過 50 秒），避免 reply token 過期則使用 push_message
+    messages = [TextSendMessage(text=part) for part in parts]
+    
+    # 若 API 呼叫耗時過長（超過 50 秒，reply token 可能過期），改用 push_message
     if elapsed_time > 50:
         try:
             line_bot_api.push_message(user_id, messages)
