@@ -6,10 +6,13 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
+# 引入 v3 Messaging API 所需的模組（支援等待動畫）
+from linebot.v3.messaging.api.messaging_api import MessagingApi
+from linebot.v3.messaging.configuration import Configuration as MessagingConfiguration
+from linebot.v3.messaging.models.show_loading_animation_request import ShowLoadingAnimationRequest
+
 # 建立 Flask 應用程式
 app = Flask(__name__)
-
-# 設定日誌，方便除錯與記錄 Webhook 請求及 API 回應
 logging.basicConfig(level=logging.INFO)
 
 # 取得環境變數
@@ -21,13 +24,13 @@ if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not XAI_API_KEY:
     logging.error("請確認環境變數 LINE_CHANNEL_ACCESS_TOKEN、LINE_CHANNEL_SECRET 與 XAI_API_KEY 均已設定。")
     exit(1)
 
-# 初始化 LINE SDK
+# 初始化 LINE SDK (v2 部分)
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 定義系統提示（system prompt），讓 AI 生成符合角色設定的回應
+# 系統提示內容，設定角色與回答風格
 SYSTEM_PROMPT = (
-    "請扮演 PMP 學習助教，用專業又可愛的語氣，提供專案管理議題提供解釋與建議。當回答 PMP 相關問題時，"
+    "你是PMP學習助教，性格冷靜中有些呆萌，會用專業又可愛的語氣，提供專案管理議題提供解釋與建議，當回答 PMP 相關問題時，"
     "請參考最新 PMBOK 指南，並以 PMP 考試答題邏輯說明專案管理概念與最佳實踐。"
     "請使用情境式解釋，例如：如果你是一位專案經理，遇到某個情境，該如何處理？"
     "提供 PMP 答題思維，例如：是否應遵循 PMBOK 流程（如先進行風險評估再決策）、"
@@ -38,19 +41,40 @@ SYSTEM_PROMPT = (
     "避免訊息因長度而被截斷。"
 )
 
+def send_loading_animation(user_id: str, loading_seconds: int = 10):
+    """
+    呼叫 LINE Messaging API 顯示等待動畫。
+    參數 loading_seconds 必須為 5 的倍數，且最大值為 60 秒。
+    """
+    # 建立 Messaging API 的設定（使用 v3 介面）
+    config = MessagingConfiguration(
+        access_token=LINE_CHANNEL_ACCESS_TOKEN,
+        host="https://api.line.me"
+    )
+    try:
+        with linebot.v3.messaging.ApiClient(config) as api_client:
+            messaging_api = MessagingApi(api_client)
+            request_body = ShowLoadingAnimationRequest(
+                chat_id=user_id,
+                loading_seconds=loading_seconds
+            )
+            messaging_api.show_loading_animation(request_body)
+            logging.info("成功發送等待動畫給用戶：%s", user_id)
+    except Exception as e:
+        logging.error("發送等待動畫錯誤：%s", e)
+
 def call_xai_api(user_message: str) -> str:
     """
     呼叫 x.ai API，根據使用者訊息及系統提示生成回應。
-    使用新的 API 端點 https://api.x.ai/v1/chat/completions
-    並根據該 API 的 payload 格式，組合 system 與 user 的訊息。
+    使用新端點與正確的 model 參數（grok-2-latest）。
     """
-    api_url = "https://api.x.ai/v1/chat/completions"  # 新的 API 端點
+    api_url = "https://api.x.ai/v1/chat/completions"  # 更新後的 API 端點
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {XAI_API_KEY}"
     }
     payload = {
-        "model": "grok-2-latest",  # 更新為正確的模型名稱
+        "model": "grok-2-latest",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message}
@@ -78,15 +102,12 @@ def split_message(text: str, max_length: int = 700) -> list:
     """
     return [text[i:i+max_length] for i in range(0, len(text), max_length)]
 
-# 定義 LINE Webhook 接收路由
 @app.route("/callback", methods=['POST'])
 def callback():
-    # 取得 LINE 傳送的 X-Line-Signature 標頭
     signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
     logging.info("收到 LINE Webhook 請求：%s", body)
     
-    # 驗證簽章
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -94,22 +115,24 @@ def callback():
         abort(400)
     return 'OK'
 
-# 訊息事件處理
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_message = event.message.text
     logging.info("收到用戶訊息：%s", user_message)
     
-    # 呼叫 x.ai API 取得回應內容
+    # 取得用戶 ID（考慮不同 SDK 版本命名）
+    user_id = event.source.user_id if hasattr(event.source, "user_id") else event.source.userId
+    
+    # 先呼叫等待動畫，提示用戶正在處理中（僅限一對一聊天有效）
+    send_loading_animation(user_id, loading_seconds=10)
+    
+    # 呼叫 x.ai API 生成回應
     response_text = call_xai_api(user_message)
     logging.info("x.ai API 回應：%s", response_text)
     
     # 當回應超過 700 字元時自動分段
-    messages = []
-    for segment in split_message(response_text, max_length=700):
-        messages.append(TextSendMessage(text=segment))
+    messages = [TextSendMessage(text=segment) for segment in split_message(response_text, max_length=700)]
     
-    # 使用 LINE Messaging API 回覆訊息，若分段則依序傳送多個訊息
     try:
         line_bot_api.reply_message(event.reply_token, messages)
     except Exception as e:
