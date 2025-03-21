@@ -44,13 +44,13 @@ def call_xai_api(user_message: str) -> str:
     使用新的 API 端點 https://api.x.ai/v1/chat/completions
     並根據該 API 的 payload 格式，組合 system 與 user 的訊息。
     """
-    api_url = "https://api.x.ai/v1/chat/completions"  # 更新後的 API 端點
+    api_url = "https://api.x.ai/v1/chat/completions"  # 新的 API 端點
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {XAI_API_KEY}"
     }
     payload = {
-        "model": "gpt-3.5-turbo",  # 如有需要請依照文件修改 model 參數
+        "model": "grok-2-latest",  # 更新為正確的模型名稱
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message}
