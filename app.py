@@ -6,133 +6,111 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
-# 初始化 Flask 應用
+# 建立 Flask 應用程式
 app = Flask(__name__)
 
-# 設置日誌記錄
+# 設定日誌，方便除錯與記錄 Webhook 請求及 API 回應
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# 從環境變量獲取憑證
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
-LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
-XAI_API_KEY = os.getenv('XAI_API_KEY')
+# 取得環境變數
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+XAI_API_KEY = os.getenv("XAI_API_KEY")
 
-# 確認環境變量是否正確載入
-logger.info(f"LINE_CHANNEL_ACCESS_TOKEN: {LINE_CHANNEL_ACCESS_TOKEN}")
-logger.info(f"LINE_CHANNEL_SECRET: {LINE_CHANNEL_SECRET}")
-logger.info(f"XAI_API_KEY: {XAI_API_KEY}")
+if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not XAI_API_KEY:
+    logging.error("請確認環境變數 LINE_CHANNEL_ACCESS_TOKEN、LINE_CHANNEL_SECRET 與 XAI_API_KEY 均已設定。")
+    exit(1)
 
-# 初始化 LINE Bot
+# 初始化 LINE SDK
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# x.ai API 配置
-XAI_API_URL = 'https://api.x.ai/v1/chat/completions'
+# 定義系統提示（system prompt），讓 AI 生成符合角色設定的回應
+SYSTEM_PROMPT = (
+    "請扮演 PMP 認證專業教師，針對專案管理議題提供解釋與建議。當回答 PMP 相關問題時，"
+    "請參考最新 PMBOK 指南，並以 PMP 考試答題邏輯說明專案管理概念與最佳實踐。"
+    "請使用情境式解釋，例如：如果你是一位專案經理，遇到某個情境，該如何處理？"
+    "提供 PMP 答題思維，例如：是否應遵循 PMBOK 流程（如先進行風險評估再決策）、"
+    "該選項是否符合 PMP 最佳實踐，是否需要與利害關係人協商或遵循變更管理流程；"
+    "並請提供具體 PMBOK 章節參考（例如：根據 PMBOK 第六版第 4 章，專案整合管理...）。"
+    "在回應中請務必設置 max_tokens 至 1000 或更高，temperature 為 0.7，以確保生成詳細且完整的回應。"
+    "若用戶要求「請提供一個非常詳細的回應」，請務必完整說明並分段回覆（每段不超過 700 字），"
+    "避免訊息因長度而被截斷。"
+)
 
-# 定義 PMP 助教的系統提示詞
-SYSTEM_PROMPT = """
-你是一位 PMP 認證專業教師，專精於專案管理領域。你的任務是根據 PMP 考試的答題邏輯和 PMBOK 指南（最新版）來解釋專案管理概念。請遵循以下準則：
-
-1. **情境式解釋**：優先使用情境式解釋，例如：「如果你是一位專案經理，遇到這種情況，你應該如何處理？」
-2. **PMP 答題思維**：
-   - 強調遵循 PMBOK 的流程，例如先進行風險評估再決策。
-   - 確認選項是否與 PMP 最佳實踐相符。
-   - 提醒是否需要與利害關係人協商或遵循變更管理流程。
-3. **PMBOK 參考**：提供具體的 PMBOK 章節參考，例如：「根據 PMBOK 第六版第 4 章，專案整合管理……」。
-4. **詳細回應**：請提供非常詳細的回應，確保涵蓋所有相關細節。
-5. **分段發送**：如果回應超過 700 字，請將內容分段發送，每段保持句子完整性。
-
-請始終保持專業、客觀的語氣，並確保你的回應符合 PMI 的最佳實踐。
-"""
-
-def split_message(message, max_length=700):
+def call_xai_api(prompt: str) -> str:
     """
-    將長訊息分段，每段不超過 max_length 字，優先在空白字符處分割以保持句子完整性
+    呼叫 x.ai API，根據使用者輸入及系統提示生成回應。
     """
-    parts = []
-    while len(message) > max_length:
-        split_index = message.rfind(' ', 0, max_length)
-        if split_index == -1:
-            split_index = max_length  # 若無空白字符，直接按 max_length 分割
-        parts.append(message[:split_index].strip())
-        message = message[split_index:].strip()
-    parts.append(message)
-    return parts
-
-@app.route("/webhook", methods=['POST'])
-def webhook():
-    """處理 LINE Webhook 請求"""
-    signature = request.headers.get('X-Line-Signature')
-    body = request.get_data(as_text=True)
-    logger.info(f"Request body: {body}")
+    api_url = "https://api.x.ai/generate"  # 請根據實際 x.ai API 端點進行調整
+    headers = {
+        "Authorization": f"Bearer {XAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "prompt": prompt,
+        "max_tokens": 1000,
+        "temperature": 0.7,
+        "system_prompt": SYSTEM_PROMPT
+    }
     
+    try:
+        response = requests.post(api_url, json=payload, headers=headers)
+        if response.status_code == 200:
+            result = response.json()
+            # 假設生成的文字存在 "text" 欄位中，請依照實際 API 回應格式調整
+            return result.get("text", "")
+        else:
+            logging.error("x.ai API 回應錯誤，狀態碼: %s, 回應內容: %s", response.status_code, response.text)
+            return "對不起，生成回應時發生錯誤。"
+    except Exception as e:
+        logging.error("呼叫 x.ai API 時發生例外：%s", e)
+        return "對不起，生成回應時發生例外。"
+
+def split_message(text: str, max_length: int = 700) -> list:
+    """
+    將長訊息依每 max_length 字元分段，回傳訊息區塊串列。
+    """
+    return [text[i:i+max_length] for i in range(0, len(text), max_length)]
+
+# 定義 LINE Webhook 接收路由
+@app.route("/callback", methods=['POST'])
+def callback():
+    # 取得 LINE 傳送的 X-Line-Signature 標頭
+    signature = request.headers.get('X-Line-Signature', '')
+    body = request.get_data(as_text=True)
+    logging.info("收到 LINE Webhook 請求：%s", body)
+    
+    # 驗證簽章
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        logger.error("Invalid signature")
-        abort(400)  # 返回 400 表示簽名無效
-    except Exception as e:
-        logger.error(f"Error in webhook: {e}")
-        return 'Internal Server Error', 500  # 返回 500 表示內部錯誤
-    return 'OK', 200  # 明確返回 200 狀態碼表示成功
+        logging.error("簽章驗證失敗")
+        abort(400)
+    return 'OK'
 
+# 訊息事件處理
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    """處理用戶發送的文字訊息"""
+    user_message = event.message.text
+    logging.info("收到用戶訊息：%s", user_message)
+    
+    # 呼叫 x.ai API 取得回應內容
+    response_text = call_xai_api(user_message)
+    logging.info("x.ai API 回應：%s", response_text)
+    
+    # 當回應超過 700 字元時自動分段
+    messages = []
+    for segment in split_message(response_text, max_length=700):
+        messages.append(TextSendMessage(text=segment))
+    
+    # 使用 LINE Messaging API 回覆訊息，若分段則依序傳送多個訊息
     try:
-        user_message = event.message.text.strip()
-        logger.info(f"Received message: {user_message}")
-
-        # 準備 x.ai API 請求
-        headers = {
-            'Authorization': f'Bearer {XAI_API_KEY}',
-            'Content-Type': 'application/json'
-        }
-        data = {
-            'model': 'grok',  # 根據 x.ai 文件確認模型名稱
-            'messages': [
-                {'role': 'system', 'content': SYSTEM_PROMPT},
-                {'role': 'user', 'content': user_message + "\n請提供一個非常詳細的回應。"}
-            ],
-            'max_tokens': 1000,  # 支持長回應
-            'temperature': 0.7   # 平衡創意與準確性
-        }
-
-        # 呼叫 x.ai API
-        response = requests.post(XAI_API_URL, headers=headers, json=data)
-        if response.status_code == 200:
-            response_data = response.json()
-            ai_response = response_data['choices'][0]['message']['content']
-            logger.info(f"AI response: {ai_response}")
-
-            # 檢查回應長度並分段發送
-            if len(ai_response) > 700:
-                messages = split_message(ai_response)
-                for msg in messages:
-                    line_bot_api.reply_message(
-                        event.reply_token,
-                        TextSendMessage(text=msg)
-                    )
-            else:
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text=ai_response)
-                )
-        else:
-            logger.error(f"Error calling x.ai API: {response.status_code} - {response.text}")
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="抱歉，我無法生成回應。請稍後再試。")
-            )
+        line_bot_api.reply_message(event.reply_token, messages)
     except Exception as e:
-        logger.error(f"Error in handle_message: {e}")
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="抱歉，發生內部錯誤。請稍後再試。")
-        )
+        logging.error("回覆訊息失敗：%s", e)
 
+# Render 部署需使用環境變量 PORT 來綁定
 if __name__ == "__main__":
-    # 適配 Render 的端口配置
     port = int(os.getenv("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
