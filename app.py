@@ -38,28 +38,33 @@ SYSTEM_PROMPT = (
     "避免訊息因長度而被截斷。"
 )
 
-def call_xai_api(prompt: str) -> str:
+def call_xai_api(user_message: str) -> str:
     """
-    呼叫 x.ai API，根據使用者輸入及系統提示生成回應。
+    呼叫 x.ai API，根據使用者訊息及系統提示生成回應。
+    使用新的 API 端點 https://api.x.ai/v1/chat/completions
+    並根據該 API 的 payload 格式，組合 system 與 user 的訊息。
     """
-    api_url = "https://api.x.ai/generate"  # 請根據實際 x.ai API 端點進行調整
+    api_url = "https://api.x.ai/v1/chat/completions"  # 更新後的 API 端點
     headers = {
-        "Authorization": f"Bearer {XAI_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {XAI_API_KEY}"
     }
     payload = {
-        "prompt": prompt,
+        "model": "gpt-3.5-turbo",  # 如有需要請依照文件修改 model 參數
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message}
+        ],
         "max_tokens": 1000,
-        "temperature": 0.7,
-        "system_prompt": SYSTEM_PROMPT
+        "temperature": 0.7
     }
     
     try:
         response = requests.post(api_url, json=payload, headers=headers)
         if response.status_code == 200:
             result = response.json()
-            # 假設生成的文字存在 "text" 欄位中，請依照實際 API 回應格式調整
-            return result.get("text", "")
+            # 假設回應格式類似於 OpenAI Chat API 的結構
+            return result.get("choices", [{}])[0].get("message", {}).get("content", "")
         else:
             logging.error("x.ai API 回應錯誤，狀態碼: %s, 回應內容: %s", response.status_code, response.text)
             return "對不起，生成回應時發生錯誤。"
