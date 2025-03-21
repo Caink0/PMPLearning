@@ -1,5 +1,4 @@
 import os
-import re
 import logging
 import requests
 import time
@@ -45,12 +44,6 @@ SYSTEM_PROMPT = (
     "若用戶要求「請提供一個非常詳細的回應」，請務必完整說明並分段回覆（每段不超過 700 字），"
     "避免訊息因長度而被截斷。"
 )
-
-def replace_bold_with_emoji(text: str) -> str:
-    """
-    將所有 Markdown 粗體標記 **text** 轉換為 emoji 包圍格式，例如：🎯text🎯。
-    """
-    return re.sub(r'\*\*(.*?)\*\*', r'🎯\1🎯', text)
 
 def send_loading_animation(user_id: str, loading_seconds: int = 10):
     """
@@ -167,36 +160,34 @@ def handle_message(event):
     user_message = event.message.text
     logging.info("收到用戶訊息：%s", user_message)
     
-    # 取得用戶 ID 與 reply token（注意不同 SDK 版本屬性名稱可能不同）
     user_id = event.source.user_id if hasattr(event.source, "user_id") else event.source.userId
     reply_token = event.reply_token
-    loading_duration = 10  # 設定等待動畫持續 10 秒
+    loading_duration = 10  # 預設等待動畫持續 10 秒
     
-    # 發送等待動畫 (僅限一對一聊天中有效)
+    # 發送等待動畫
     send_loading_animation(user_id, loading_seconds=loading_duration)
     
-    # 以線程方式呼叫 API
     container = {}
+    start_time = time.time()
     thread = Thread(target=get_api_response, args=(user_message, container))
     thread.start()
     
-    # 等待預設的等待動畫時間
+    # 先等待預設動畫時間
     thread.join(timeout=loading_duration)
-    # 若線程還在執行，等待其完成，但不再額外延遲
+    # 如果預設時間後仍未完成，持續等待直至完成
     if thread.is_alive():
         thread.join()
-    
+    total_elapsed = time.time() - start_time
+
     response_text = container.get('response', "對不起，生成回應時發生錯誤。")
     
-    # 使用智慧斷行與格式完整性檢查
+    # 以智慧方式切割長訊息，並確保 Markdown 格式完整
     parts = smart_split_message(response_text, max_length=700)
     parts = ensure_complete_markdown(parts)
-    parts = [replace_bold_with_emoji(part) for part in parts]
-    
     messages = [TextSendMessage(text=part) for part in parts]
     
-    # 若 API 呼叫耗時過長（超過 50 秒，reply token 可能過期），改用 push_message
-    if (time.time() - thread.start_time) > 50 if hasattr(thread, 'start_time') else False:
+    # 如果總耗時超過 50 秒（reply token 可能過期），則使用 push_message 傳送
+    if total_elapsed > 50:
         try:
             line_bot_api.push_message(user_id, messages)
             logging.info("使用 push_message 發送回應給用戶：%s", user_id)
