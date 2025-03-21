@@ -3,6 +3,8 @@ import re
 import logging
 import requests
 import time
+from threading import Thread
+
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -141,6 +143,12 @@ def ensure_complete_markdown(parts: list) -> list:
         complete_parts.append(buffer)
     return complete_parts
 
+def get_api_response(user_message: str, container: dict):
+    """
+    線程執行函數，呼叫 x.ai API 並將結果存入 container 字典中。
+    """
+    container['response'] = call_xai_api(user_message)
+
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
@@ -167,25 +175,28 @@ def handle_message(event):
     # 發送等待動畫 (僅限一對一聊天中有效)
     send_loading_animation(user_id, loading_seconds=loading_duration)
     
-    start_time = time.time()
-    response_text = call_xai_api(user_message)
-    elapsed_time = time.time() - start_time
+    # 以線程方式呼叫 API
+    container = {}
+    thread = Thread(target=get_api_response, args=(user_message, container))
+    thread.start()
     
-    # 若 API 回應在等待動畫時間內完成，補足剩餘等待時間
-    if elapsed_time < loading_duration:
-        time.sleep(loading_duration - elapsed_time)
+    # 等待預設的等待動畫時間
+    thread.join(timeout=loading_duration)
+    # 若線程還在執行，等待其完成，但不再額外延遲
+    if thread.is_alive():
+        thread.join()
     
-    # 使用 smart_split_message 進行斷行切割
+    response_text = container.get('response', "對不起，生成回應時發生錯誤。")
+    
+    # 使用智慧斷行與格式完整性檢查
     parts = smart_split_message(response_text, max_length=700)
-    # 確保 Markdown 格式完整
     parts = ensure_complete_markdown(parts)
-    # 將 Markdown 粗體符號 ** 替換成 emoji
     parts = [replace_bold_with_emoji(part) for part in parts]
     
     messages = [TextSendMessage(text=part) for part in parts]
     
     # 若 API 呼叫耗時過長（超過 50 秒，reply token 可能過期），改用 push_message
-    if elapsed_time > 50:
+    if (time.time() - thread.start_time) > 50 if hasattr(thread, 'start_time') else False:
         try:
             line_bot_api.push_message(user_id, messages)
             logging.info("使用 push_message 發送回應給用戶：%s", user_id)
