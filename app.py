@@ -7,7 +7,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
-# 新增 v3 Messaging API 所需的匯入
+# 引入 v3 Messaging API 所需的模組
 from linebot.v3.messaging import ApiClient
 from linebot.v3.messaging.configuration import Configuration as MessagingConfiguration
 from linebot.v3.messaging.api.messaging_api import MessagingApi
@@ -30,15 +30,14 @@ if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not XAI_API_KEY:
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 系統提示，設定角色與回答風格
+# 更新後的系統提示 (角色設定)
 SYSTEM_PROMPT = (
-    "請扮演 PMP 認證專業教師，針對專案管理議題提供解釋與建議。當回答 PMP 相關問題時，"
-    "請參考最新 PMBOK 指南，並以 PMP 考試答題邏輯說明專案管理概念與最佳實踐。"
-    "請使用情境式解釋，例如：如果你是一位專案經理，遇到某個情境，該如何處理？"
-    "提供 PMP 答題思維，例如：是否應遵循 PMBOK 流程（如先進行風險評估再決策）、"
-    "該選項是否符合 PMP 最佳實踐，是否需要與利害關係人協商或遵循變更管理流程；"
+    "請扮演 PMP 學習助教，用專業又可愛的語氣，提供專案管理議題的解釋與建議。"
+    "當回答 PMP 相關問題時，請參考最新 PMBOK 指南，並以 PMP 考試答題邏輯說明專案管理概念與最佳實踐。"
+    "請使用情境式解釋，例如：如果你是一位專案經理，遇到ＯＯＯ（user提問主題），該如何處理？"
+    "提供 PMP 答題思維，確認回應是否符合 PMP 最佳實踐；"
     "並請提供具體 PMBOK 章節參考（例如：根據 PMBOK 第六版第 4 章，專案整合管理...）。"
-    "在回應中請務必設置 max_tokens 至 1000 或更高，temperature 為 0.7，以確保生成詳細且完整的回應。"
+    "在回應中請務必設置 max_tokens 至 700 或更高，temperature 為 0.7，以確保生成詳細且完整的回應。"
     "若用戶要求「請提供一個非常詳細的回應」，請務必完整說明並分段回覆（每段不超過 700 字），"
     "避免訊息因長度而被截斷。"
 )
@@ -119,18 +118,29 @@ def handle_message(event):
     user_message = event.message.text
     logging.info("收到用戶訊息：%s", user_message)
     
-    # 取得用戶 ID，注意 v2 與 v3 可能屬性命名略有不同
+    # 取得用戶 ID，注意 v2 與 v3 屬性名稱可能略有不同
     user_id = event.source.user_id if hasattr(event.source, "user_id") else event.source.userId
     
-    # 發送等待動畫 (請確保在一對一聊天中測試)
-    send_loading_animation(user_id, loading_seconds=10)
+    # 設定等待動畫的持續秒數（必須為 5 的倍數，最大 60 秒），此處設定為 10 秒
+    loading_duration = 10
     
-    # 暫停 3 秒模擬延遲，便於測試等待動畫效果
-    time.sleep(3)
+    # 發送等待動畫 (僅限一對一聊天中有效)
+    send_loading_animation(user_id, loading_seconds=loading_duration)
     
+    # 記錄開始時間
+    start_time = time.time()
+    
+    # 呼叫 x.ai API 取得回應
     response_text = call_xai_api(user_message)
     logging.info("x.ai API 回應：%s", response_text)
     
+    # 計算 API 呼叫花費的時間，若不足 loading_duration 則等待剩餘時間
+    elapsed_time = time.time() - start_time
+    remaining = loading_duration - elapsed_time
+    if remaining > 0:
+        time.sleep(remaining)
+    
+    # 將回應依字元長度分段（每段不超過 700 字）
     messages = [TextSendMessage(text=segment) for segment in split_message(response_text, max_length=700)]
     
     try:
