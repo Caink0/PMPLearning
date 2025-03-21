@@ -34,6 +34,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 SYSTEM_PROMPT = (
     "請扮演 PMP 學習助教，用專業又可愛的語氣，提供專案管理議題的解釋與建議。"
     "當回答 PMP 相關問題時，請參考最新 PMBOK 指南，並以 PMP 考試答題邏輯說明專案管理概念與最佳實踐。"
+    "請在情境式解釋之前，先提供所有在回應中涉及的相關名詞定義（若 PMBOK 有定義）；若無，則不需提供。"
     "請使用情境式解釋，例如：如果你是一位專案經理，遇到ＯＯＯ（user提問主題），該如何處理？"
     "提供 PMP 答題思維，確認回應是否符合 PMP 最佳實踐；"
     "並請提供具體 PMBOK 章節參考（例如：根據 PMBOK 第六版第 4 章，專案整合管理...）。"
@@ -66,6 +67,7 @@ def send_loading_animation(user_id: str, loading_seconds: int = 10):
 def call_xai_api(user_message: str) -> str:
     """
     呼叫 x.ai API，根據使用者訊息及系統提示生成回應。
+    設置參數：max_tokens 為 700，temperature 為 0.7。
     """
     api_url = "https://api.x.ai/v1/chat/completions"
     headers = {
@@ -78,7 +80,7 @@ def call_xai_api(user_message: str) -> str:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message}
         ],
-        "max_tokens": 1000,
+        "max_tokens": 700,
         "temperature": 0.7
     }
     
@@ -118,35 +120,36 @@ def handle_message(event):
     user_message = event.message.text
     logging.info("收到用戶訊息：%s", user_message)
     
-    # 取得用戶 ID，注意 v2 與 v3 屬性名稱可能略有不同
+    # 取得用戶 ID 與 reply token
     user_id = event.source.user_id if hasattr(event.source, "user_id") else event.source.userId
+    reply_token = event.reply_token
+    loading_duration = 10  # 設定等待動畫持續 10 秒
     
-    # 設定等待動畫的持續秒數（必須為 5 的倍數，最大 60 秒），此處設定為 10 秒
-    loading_duration = 10
-    
-    # 發送等待動畫 (僅限一對一聊天中有效)
+    # 發送等待動畫
     send_loading_animation(user_id, loading_seconds=loading_duration)
     
-    # 記錄開始時間
     start_time = time.time()
-    
-    # 呼叫 x.ai API 取得回應
     response_text = call_xai_api(user_message)
-    logging.info("x.ai API 回應：%s", response_text)
-    
-    # 計算 API 呼叫花費的時間，若不足 loading_duration 則等待剩餘時間
     elapsed_time = time.time() - start_time
-    remaining = loading_duration - elapsed_time
-    if remaining > 0:
-        time.sleep(remaining)
     
-    # 將回應依字元長度分段（每段不超過 700 字）
+    # 如果 API 呼叫在等待動畫時間內完成，補足剩餘等待時間
+    if elapsed_time < loading_duration:
+        time.sleep(loading_duration - elapsed_time)
+    
     messages = [TextSendMessage(text=segment) for segment in split_message(response_text, max_length=700)]
     
-    try:
-        line_bot_api.reply_message(event.reply_token, messages)
-    except Exception as e:
-        logging.error("回覆訊息失敗：%s", e)
+    # 若 API 呼叫耗時過長（超過 50 秒，為安全考量），使用 push_message 避免 reply token 過期
+    if elapsed_time > 50:
+        try:
+            line_bot_api.push_message(user_id, messages)
+            logging.info("使用 push_message 發送回應給用戶：%s", user_id)
+        except Exception as e:
+            logging.error("使用 push_message 回覆訊息失敗：%s", e)
+    else:
+        try:
+            line_bot_api.reply_message(reply_token, messages)
+        except Exception as e:
+            logging.error("回覆訊息失敗：%s", e)
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
