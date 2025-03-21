@@ -1,14 +1,16 @@
 import os
 import logging
 import requests
+import time
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
-# 引入 v3 Messaging API 所需的模組（支援等待動畫）
-from linebot.v3.messaging.api.messaging_api import MessagingApi
+# 新增 v3 Messaging API 所需的匯入
+from linebot.v3.messaging import ApiClient
 from linebot.v3.messaging.configuration import Configuration as MessagingConfiguration
+from linebot.v3.messaging.api.messaging_api import MessagingApi
 from linebot.v3.messaging.models.show_loading_animation_request import ShowLoadingAnimationRequest
 
 # 建立 Flask 應用程式
@@ -24,13 +26,13 @@ if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not XAI_API_KEY:
     logging.error("請確認環境變數 LINE_CHANNEL_ACCESS_TOKEN、LINE_CHANNEL_SECRET 與 XAI_API_KEY 均已設定。")
     exit(1)
 
-# 初始化 LINE SDK (v2 部分)
+# 初始化 LINE SDK (v2)
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 系統提示內容，設定角色與回答風格
+# 系統提示，設定角色與回答風格
 SYSTEM_PROMPT = (
-    "你是PMP學習助教，性格冷靜中有些呆萌，會用專業又可愛的語氣，提供專案管理議題提供解釋與建議，當回答 PMP 相關問題時，"
+    "請扮演 PMP 認證專業教師，針對專案管理議題提供解釋與建議。當回答 PMP 相關問題時，"
     "請參考最新 PMBOK 指南，並以 PMP 考試答題邏輯說明專案管理概念與最佳實踐。"
     "請使用情境式解釋，例如：如果你是一位專案經理，遇到某個情境，該如何處理？"
     "提供 PMP 答題思維，例如：是否應遵循 PMBOK 流程（如先進行風險評估再決策）、"
@@ -44,15 +46,14 @@ SYSTEM_PROMPT = (
 def send_loading_animation(user_id: str, loading_seconds: int = 10):
     """
     呼叫 LINE Messaging API 顯示等待動畫。
-    參數 loading_seconds 必須為 5 的倍數，且最大值為 60 秒。
+    loading_seconds 必須為 5 的倍數，且最大值為 60 秒。
     """
-    # 建立 Messaging API 的設定（使用 v3 介面）
     config = MessagingConfiguration(
         access_token=LINE_CHANNEL_ACCESS_TOKEN,
         host="https://api.line.me"
     )
     try:
-        with linebot.v3.messaging.ApiClient(config) as api_client:
+        with ApiClient(config) as api_client:
             messaging_api = MessagingApi(api_client)
             request_body = ShowLoadingAnimationRequest(
                 chat_id=user_id,
@@ -66,9 +67,8 @@ def send_loading_animation(user_id: str, loading_seconds: int = 10):
 def call_xai_api(user_message: str) -> str:
     """
     呼叫 x.ai API，根據使用者訊息及系統提示生成回應。
-    使用新端點與正確的 model 參數（grok-2-latest）。
     """
-    api_url = "https://api.x.ai/v1/chat/completions"  # 更新後的 API 端點
+    api_url = "https://api.x.ai/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {XAI_API_KEY}"
@@ -87,7 +87,6 @@ def call_xai_api(user_message: str) -> str:
         response = requests.post(api_url, json=payload, headers=headers)
         if response.status_code == 200:
             result = response.json()
-            # 假設回應格式類似於 OpenAI Chat API 的結構
             return result.get("choices", [{}])[0].get("message", {}).get("content", "")
         else:
             logging.error("x.ai API 回應錯誤，狀態碼: %s, 回應內容: %s", response.status_code, response.text)
@@ -120,17 +119,18 @@ def handle_message(event):
     user_message = event.message.text
     logging.info("收到用戶訊息：%s", user_message)
     
-    # 取得用戶 ID（考慮不同 SDK 版本命名）
+    # 取得用戶 ID，注意 v2 與 v3 可能屬性命名略有不同
     user_id = event.source.user_id if hasattr(event.source, "user_id") else event.source.userId
     
-    # 先呼叫等待動畫，提示用戶正在處理中（僅限一對一聊天有效）
+    # 發送等待動畫 (請確保在一對一聊天中測試)
     send_loading_animation(user_id, loading_seconds=10)
     
-    # 呼叫 x.ai API 生成回應
+    # 暫停 3 秒模擬延遲，便於測試等待動畫效果
+    time.sleep(3)
+    
     response_text = call_xai_api(user_message)
     logging.info("x.ai API 回應：%s", response_text)
     
-    # 當回應超過 700 字元時自動分段
     messages = [TextSendMessage(text=segment) for segment in split_message(response_text, max_length=700)]
     
     try:
@@ -138,7 +138,6 @@ def handle_message(event):
     except Exception as e:
         logging.error("回覆訊息失敗：%s", e)
 
-# Render 部署需使用環境變量 PORT 來綁定
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
