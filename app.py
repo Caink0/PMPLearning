@@ -99,8 +99,15 @@ def call_xai_api(user_message: str) -> str:
 def split_message(text: str, max_length: int = 700) -> list:
     """
     將長訊息依每 max_length 字元分段，回傳訊息區塊串列。
+    若分段中出現不成對的 triple backticks (```)，則自動補齊 markdown 格式，避免斷裂問題。
     """
-    return [text[i:i+max_length] for i in range(0, len(text), max_length)]
+    segments = [text[i:i+max_length] for i in range(0, len(text), max_length)]
+    for i in range(len(segments) - 1):
+        # 若本段中的 triple backticks 不成對，則補上 closing 標記
+        if segments[i].count("```") % 2 != 0:
+            segments[i] += "\n```"
+            segments[i+1] = "```\n" + segments[i+1]
+    return segments
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -132,13 +139,13 @@ def handle_message(event):
     response_text = call_xai_api(user_message)
     elapsed_time = time.time() - start_time
     
-    # 如果 API 呼叫在等待動畫時間內完成，補足剩餘等待時間
+    # 補足剩餘等待時間，確保動畫完整播放後再回覆
     if elapsed_time < loading_duration:
         time.sleep(loading_duration - elapsed_time)
     
     messages = [TextSendMessage(text=segment) for segment in split_message(response_text, max_length=700)]
     
-    # 若 API 呼叫耗時過長（超過 50 秒，為安全考量），使用 push_message 避免 reply token 過期
+    # 若回應超時（超過 50 秒），避免 reply token 過期則使用 push_message
     if elapsed_time > 50:
         try:
             line_bot_api.push_message(user_id, messages)
