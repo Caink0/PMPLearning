@@ -50,7 +50,7 @@ SYSTEM_PROMPT = (
     "  - 這個選項是否與 PMP 最佳實踐相符\n"
     "  - 是否需要與利害關係人協商，或遵循變更管理流程\n"
     "• 請提供具體的 PMBOK 章節參考。\n\n"
-    "請生成詳細且長篇的回應，確保內容豐富且具體，至少達到1000字的細節描述。\n\n"
+    "請生成詳細且長篇的回應，確保內容豐富且具體，至少達到1000字的細節描述，並請確保你的回應完整，不要中斷。\n\n"
     "例如：\n"
     "如果我問：「在專案執行過程中發現需求變更，應該怎麼辦？」\n"
     "你可以回答：\n"
@@ -63,7 +63,7 @@ SYSTEM_PROMPT = (
     "開始對話"
 )
 
-# 預設的 PMP 答題思維區塊，僅在使用者詢問「定義」時附加
+# 預設的 PMP 答題思維區塊（僅當使用者詢問「定義」時附加）
 EXTRA_BLOCK = (
     "PMP 答題思維\n"
     "- 是否應該遵循 PMBOK 的流程？是的，PDM 是 PMBOK 第 6 版第 6 章《專案時間管理》的一部分，特別是在活動排序過程中使用。\n"
@@ -222,7 +222,7 @@ def handle_message(event):
         start_time = time.time()
         thread = Thread(target=get_api_response, args=(user_message, container))
         thread.start()
-        thread.join(timeout=10)  # 等待 10 秒（與等待動畫同步）
+        thread.join(timeout=15)  # 延長等待時間至 15 秒
         if thread.is_alive():
             thread.join()  # 若超時則持續等待直到完成
         total_elapsed = time.time() - start_time
@@ -230,7 +230,7 @@ def handle_message(event):
         xai_response = container.get('response', "對不起，生成回應時發生錯誤。可能原因包括：系統繁忙、API 回應延遲或網絡問題，請稍後再試。")
         logger.info("x.ai response: %s", xai_response)
         
-        # 若使用者查詢定義相關內容，則附加 PMP 答題思維區塊
+        # 若使用者訊息包含「定義」關鍵字，則附加 PMP 答題思維區塊
         if "定義" in user_message:
             xai_response += "\n\n" + EXTRA_BLOCK
         
