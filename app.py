@@ -24,7 +24,6 @@ logger.setLevel(logging.INFO)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 XAI_API_KEY = os.getenv("XAI_API_KEY")
-
 if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not XAI_API_KEY:
     logger.error("請確認環境變數 LINE_CHANNEL_ACCESS_TOKEN、LINE_CHANNEL_SECRET 與 XAI_API_KEY 均已設定。")
     exit(1)
@@ -33,7 +32,7 @@ if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not XAI_API_KEY:
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 假設的最大訊息長度（根據實際需求調整）
+# 假設的最大訊息長度（可根據需求調整）
 MAX_LINE_MESSAGE_LENGTH = 1000
 
 # 排隊參數：設定最大同時處理請求數
@@ -41,7 +40,7 @@ MAX_CONCURRENT_REQUESTS = 5
 current_requests = 0
 counter_lock = Lock()
 
-# 系統提示 (角色設定)
+# 系統提示 (角色設定) 更新如下：
 SYSTEM_PROMPT = (
     "請扮演的PMP助教，以親切且專業的語氣，搭配有記憶點的emoji，回答 PMP 考試的答題邏輯解釋專案管理概念。\n"
     "• 在回答 PMP 相關問題時，請參考 PMBOK 指南（最新版），並以 PMP 考試的標準來解釋，確保符合 PMI 的最佳實踐。\n"
@@ -103,7 +102,6 @@ def call_xai_api(user_message: str) -> str:
         "max_tokens": 700,
         "temperature": 0.7
     }
-    
     try:
         response = requests.post(api_url, json=payload, headers=headers)
         if response.status_code == 200:
@@ -111,10 +109,10 @@ def call_xai_api(user_message: str) -> str:
             return result.get("choices", [{}])[0].get("message", {}).get("content", "")
         else:
             logger.error("x.ai API 回應錯誤，狀態碼: %s, 回應內容: %s", response.status_code, response.text)
-            return "對不起，生成回應時發生錯誤。"
+            return ("對不起，生成回應時發生錯誤。可能原因包括：系統繁忙、API 回應延遲或網絡問題，請稍後再試。")
     except Exception as e:
         logger.error("呼叫 x.ai API 時發生例外：%s", e)
-        return "對不起，生成回應時發生例外。"
+        return ("對不起，生成回應時發生例外。可能原因包括：系統繁忙、API 回應延遲或網絡問題，請稍後再試。")
 
 def split_message(text: str, max_length: int = MAX_LINE_MESSAGE_LENGTH) -> list:
     """
@@ -155,7 +153,15 @@ def webhook():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     global current_requests
-    # 進入前先檢查是否超過最大同時處理數量
+    # 若使用者詢問查詢無回應原因，則立即回覆
+    if event.message.text.strip() in ["查詢原因", "為什麼沒有回應", "無回應原因"]:
+        line_bot_api.reply_message(
+            event.reply_token,
+            [TextSendMessage(text="可能原因包括：系統繁忙、API 回應延遲或網絡問題。請稍後再試或聯繫我們。")]
+        )
+        return
+
+    # 進入前先檢查是否超過最大同時處理請求數量
     with counter_lock:
         if current_requests >= MAX_CONCURRENT_REQUESTS:
             logger.info("系統繁忙：請求數量達上限")
@@ -181,13 +187,13 @@ def handle_message(event):
         thread.start()
         thread.join(timeout=10)  # 等待 10 秒（與等待動畫同步）
         if thread.is_alive():
-            thread.join()  # 若超時則持續等待
+            thread.join()  # 若超時則持續等待直到完成
         total_elapsed = time.time() - start_time
 
-        xai_response = container.get('response', "對不起，生成回應時發生錯誤！")
+        xai_response = container.get('response', "對不起，生成回應時發生錯誤。可能原因包括：系統繁忙、API 回應延遲或網絡問題，請稍後再試。")
         logger.info("x.ai response: %s", xai_response)
         
-        # 分段發送回應
+        # 分段回應傳送
         splitted = split_message(xai_response, MAX_LINE_MESSAGE_LENGTH)
         if len(splitted) <= 5:
             try:
