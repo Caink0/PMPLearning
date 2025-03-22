@@ -32,7 +32,7 @@ if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET or not XAI_API_KEY:
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 假設的最大訊息長度（可根據需求調整）
+# 假設的最大單條訊息長度（根據 LINE 限制，此處設定為 1000 字元）
 MAX_LINE_MESSAGE_LENGTH = 1000
 
 # 排隊參數：設定最大同時處理請求數
@@ -40,7 +40,7 @@ MAX_CONCURRENT_REQUESTS = 5
 current_requests = 0
 counter_lock = Lock()
 
-# 系統提示 (角色設定) 更新如下：
+# 更新後的系統提示 (角色設定)
 SYSTEM_PROMPT = (
     "請扮演的PMP助教，以親切且專業的語氣，搭配有記憶點的emoji，回答 PMP 考試的答題邏輯解釋專案管理概念。\n"
     "• 在回答 PMP 相關問題時，請參考 PMBOK 指南（最新版），並以 PMP 考試的標準來解釋，確保符合 PMI 的最佳實踐。\n"
@@ -50,6 +50,7 @@ SYSTEM_PROMPT = (
     "  - 這個選項是否與 PMP 最佳實踐相符\n"
     "  - 是否需要與利害關係人協商，或遵循變更管理流程\n"
     "• 請提供具體的 PMBOK 章節參考。\n\n"
+    "請生成詳細且長篇的回應，確保內容豐富且具體，至少達到1000字的細節描述。\n\n"
     "例如：\n"
     "如果我問：「在專案執行過程中發現需求變更，應該怎麼辦？」\n"
     "你可以回答：\n"
@@ -60,6 +61,15 @@ SYSTEM_PROMPT = (
     "    2. 透過變更控制委員會（CCB）審查變更的影響。\n"
     "    3. 若批准，更新專案文件（如專案管理計畫與範疇說明書）。\n"
     "開始對話"
+)
+
+# 預設的 PMP 答題思維區塊，僅在使用者詢問「定義」時附加
+EXTRA_BLOCK = (
+    "PMP 答題思維\n"
+    "- 是否應該遵循 PMBOK 的流程？是的，PDM 是 PMBOK 第 6 版第 6 章《專案時間管理》的一部分，特別是在活動排序過程中使用。\n"
+    "- 這個選項是否與 PMP 最佳實踐相符？是的，使用 PDM 繪製活動之間的邏輯關係是符合 PMI 的最佳實踐。\n"
+    "- 是否需要與利害關係人協商，或遵循變更管理流程？在繪製 PDM 的階段，通常不需要與利害關係人協商，但如果活動之間的依賴關係變更，可能需要啟動變更管理流程。\n\n"
+    "【PMBOK 章節參考】：PMBOK 第 6 版，第 6 章《專案時間管理》。"
 )
 
 def send_loading_animation(user_id: str, loading_seconds: int = 10):
@@ -86,7 +96,7 @@ def send_loading_animation(user_id: str, loading_seconds: int = 10):
 def call_xai_api(user_message: str) -> str:
     """
     呼叫 x.ai API 生成回應，
-    設置參數：max_tokens 為 700，temperature 為 0.7。
+    設置參數：max_tokens 為 1000，temperature 為 0.7。
     """
     api_url = "https://api.x.ai/v1/chat/completions"
     headers = {
@@ -99,7 +109,7 @@ def call_xai_api(user_message: str) -> str:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message}
         ],
-        "max_tokens": 700,
+        "max_tokens": 1000,
         "temperature": 0.7
     }
     try:
@@ -131,6 +141,33 @@ def split_message(text: str, max_length: int = MAX_LINE_MESSAGE_LENGTH) -> list:
     if text:
         parts.append(text)
     return parts
+
+def reply_long_text(reply_token, user_id, text):
+    """
+    根據生成的回應文字，若超過 1000 字元則分段傳送：
+      - 若分段數不超過 5 條，直接以 reply_message 傳送
+      - 若超過 5 條，先以 reply_message 傳送前 5 條，再以 push_message 傳送剩餘部分
+    """
+    segments = split_message(text, MAX_LINE_MESSAGE_LENGTH)
+    if len(segments) <= 5:
+        try:
+            line_bot_api.reply_message(
+                reply_token,
+                [TextSendMessage(text=seg) for seg in segments]
+            )
+        except Exception as e:
+            logger.error("回覆訊息失敗：%s", str(e))
+    else:
+        try:
+            first_five = [TextSendMessage(text=seg) for seg in segments[:5]]
+            line_bot_api.reply_message(reply_token, first_five)
+            for seg in segments[5:]:
+                line_bot_api.push_message(
+                    user_id,
+                    [TextSendMessage(text=seg)]
+                )
+        except Exception as e:
+            logger.error("傳送後續訊息失敗：%s", str(e))
 
 def get_api_response(user_message: str, container: dict):
     """
@@ -193,27 +230,12 @@ def handle_message(event):
         xai_response = container.get('response', "對不起，生成回應時發生錯誤。可能原因包括：系統繁忙、API 回應延遲或網絡問題，請稍後再試。")
         logger.info("x.ai response: %s", xai_response)
         
-        # 分段回應傳送
-        splitted = split_message(xai_response, MAX_LINE_MESSAGE_LENGTH)
-        if len(splitted) <= 5:
-            try:
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    [TextSendMessage(text=msg) for msg in splitted]
-                )
-            except Exception as e:
-                logger.error("回覆訊息失敗：%s", str(e))
-        else:
-            try:
-                first_five = [TextSendMessage(text=msg) for msg in splitted[:5]]
-                line_bot_api.reply_message(event.reply_token, first_five)
-                for msg in splitted[5:]:
-                    line_bot_api.push_message(
-                        user_id,
-                        [TextSendMessage(text=msg)]
-                    )
-            except Exception as e:
-                logger.error("傳送後續訊息失敗：%s", str(e))
+        # 若使用者查詢定義相關內容，則附加 PMP 答題思維區塊
+        if "定義" in user_message:
+            xai_response += "\n\n" + EXTRA_BLOCK
+        
+        # 使用 reply_long_text 函式分段回覆
+        reply_long_text(event.reply_token, user_id, xai_response)
         logger.info("Reply sent successfully")
     finally:
         with counter_lock:
