@@ -161,7 +161,7 @@ def handle_message(event):
             logger.info("系統繁忙：請求數量達上限")
             line_bot_api.reply_message(
                 event.reply_token,
-                [TextSendMessage(text="😅 目前系統繁忙，您的請求正在排隊中，請稍候...")]
+                [TextSendMessage(text="低成本維運中😅 目前系統繁忙，等等在試試吧！")]
             )
             return
         current_requests += 1
