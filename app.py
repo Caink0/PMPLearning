@@ -134,8 +134,8 @@ def split_message(text: str, max_length: int = MAX_LINE_MESSAGE_LENGTH) -> list:
         split_pos = text.rfind("\n", 0, max_length)
         if split_pos == -1:
             split_pos = text.rfind(" ", 0, max_length)
-            if split_pos == -1:
-                split_pos = max_length
+        if split_pos == -1 or split_pos < max_length // 2:
+            split_pos = max_length
         parts.append(text[:split_pos].rstrip())
         text = text[split_pos:].lstrip()
     if text:
@@ -149,31 +149,33 @@ def reply_long_text(reply_token, user_id, text):
       - 若超過 5 條，先以 reply_message 傳送前 5 條，再以 push_message 傳送剩餘部分
     """
     segments = split_message(text, MAX_LINE_MESSAGE_LENGTH)
-    if len(segments) <= 5:
-        try:
-            line_bot_api.reply_message(
-                reply_token,
-                [TextSendMessage(text=seg) for seg in segments]
-            )
-        except Exception as e:
-            logger.error("回覆訊息失敗：%s", str(e))
-    else:
-        try:
-            first_five = [TextSendMessage(text=seg) for seg in segments[:5]]
-            line_bot_api.reply_message(reply_token, first_five)
-            for seg in segments[5:]:
-                line_bot_api.push_message(
-                    user_id,
-                    [TextSendMessage(text=seg)]
-                )
-        except Exception as e:
-            logger.error("傳送後續訊息失敗：%s", str(e))
+    messages = [TextSendMessage(text=seg) for seg in segments]
+    try:
+        if len(messages) <= 5:
+            line_bot_api.reply_message(reply_token, messages)
+            logger.info("成功傳送 %d 條訊息 (reply_message)", len(messages))
+        else:
+            line_bot_api.reply_message(reply_token, messages[:5])
+            logger.info("成功傳送前 5 條訊息 (reply_message)")
+            for msg in messages[5:]:
+                try:
+                    line_bot_api.push_message(user_id, msg)
+                    logger.info("成功傳送後續訊息 (push_message): %s", msg.text[:20])
+                    time.sleep(0.5)
+                except Exception as e:
+                    logger.error("傳送後續訊息失敗 (push_message): %s", str(e))
+    except Exception as e:
+        logger.error("回覆訊息失敗: %s", str(e))
 
 def get_api_response(user_message: str, container: dict):
     """
     線程執行函數，呼叫 x.ai API 並將回應存入 container。
     """
-    container['response'] = call_xai_api(user_message)
+    try:
+        container['response'] = call_xai_api(user_message)
+    except Exception as e:
+        container['response'] = "生成回應時發生錯誤，請稍後再試。"
+        logger.error("線程執行錯誤: %s", str(e))
 
 @app.route("/webhook", methods=['POST'])
 def webhook():
